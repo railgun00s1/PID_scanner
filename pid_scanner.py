@@ -1,6 +1,6 @@
 # ==============================================================================
 #  CYBER DEFENSE TOOLKIT
-#  Version: 6.3
+#  Version: 6.4
 #  Developer: rlgn00s1
 # ==============================================================================
 
@@ -25,8 +25,8 @@ console = Console()
 # CONFIGURATION
 # ==========================================
 # NOTE: Be careful sharing code with real API keys publicly.
-VT_API_KEY = 'a145b277b8c83de1ef410fe7370649ce84e9e8253b6cc98bed2d0c285ed7faa1'
-HA_API_KEY = 'qkz5eeca599fe34307ttbummf2b25a838rr1h02f8d018b14z3wqn1b72877395a'
+VT_API_KEY = 'enter your VIRUSTOTAL api key here'
+HA_API_KEY = 'enter your HYBRID ANALYSIS api key here'
 # ==========================================
 
 def get_file_hash(filepath):
@@ -67,6 +67,35 @@ def check_hybrid_analysis(file_hash):
             return f"Error {response.status_code}"
     except Exception as e:
         return f"Error: {e}"
+
+# --- NEW SHARED GUI FUNCTION ---
+def display_scan_results(vt_result, ha_result):
+    """
+    Formats and prints the threat intelligence results nicely.
+    Used by both Manual Hash Check and PID Investigation.
+    """
+    # Format VirusTotal Text
+    vt_text = ""
+    if isinstance(vt_result, dict):
+        vt_text += f"[bold red]Malicious:  {vt_result.get('malicious', 0)}[/bold red]\n"
+        vt_text += f"[yellow]Suspicious: {vt_result.get('suspicious', 0)}[/yellow]\n"
+        vt_text += f"[green]Clean:      {vt_result.get('harmless', 0)}[/green]"
+    else:
+        vt_text = str(vt_result)
+
+    # Format Hybrid Analysis Text
+    ha_text = ""
+    if isinstance(ha_result, dict):
+        verdict = ha_result.get('verdict', 'unknown')
+        verdict_color = "red" if verdict == 'malicious' else "green"
+        ha_text += f"Verdict:      [{verdict_color}]{verdict.upper()}[/{verdict_color}]\n"
+        ha_text += f"Threat Score: {ha_result.get('threat_score', 'N/A')}/100"
+    else:
+        ha_text = str(ha_result)
+
+    # Print Panels
+    console.print(Panel(vt_text, title="[bold]VirusTotal[/bold]", border_style="blue"))
+    console.print(Panel(ha_text, title="[bold]Hybrid Analysis[/bold]", border_style="magenta"))
 
 def get_process_ports(proc):
     ports = []
@@ -132,27 +161,10 @@ def investigate_target(pid):
             vt_result = check_virustotal(file_hash)
             ha_result = check_hybrid_analysis(file_hash)
         
-        # Display Results in Panels
-        vt_text = ""
-        if isinstance(vt_result, dict):
-            vt_text += f"[bold red]Malicious:  {vt_result['malicious']}[/bold red]\n"
-            vt_text += f"[yellow]Suspicious: {vt_result['suspicious']}[/yellow]\n"
-            vt_text += f"[green]Clean:      {vt_result['harmless']}[/green]"
-        else:
-            vt_text = str(vt_result)
-
-        ha_text = ""
-        if isinstance(ha_result, dict):
-            verdict_color = "red" if ha_result['verdict'] == 'malicious' else "green"
-            ha_text += f"Verdict:      [{verdict_color}]{ha_result['verdict'].upper()}[/{verdict_color}]\n"
-            ha_text += f"Threat Score: {ha_result['threat_score']}/100"
-        else:
-            ha_text = str(ha_result)
-
-        # Print Side-by-Side Grid or stacked
-        console.print(Panel(vt_text, title="[bold]VirusTotal[/bold]", border_style="blue"))
-        console.print(Panel(ha_text, title="[bold]Hybrid Analysis[/bold]", border_style="magenta"))
+        # --- USE UNIFIED DISPLAY FUNCTION ---
+        display_scan_results(vt_result, ha_result)
         
+        # Show Process Tree
         console.print(Panel(display_process_tree(proc), title="Process Lineage", border_style="white"))
 
         # Action Menu
@@ -212,13 +224,8 @@ def run_port_scan():
     console.print(f"[dim]Scanning {target_ip}:{target_port}...[/dim]")
 
     try:
-        # 1. Create the socket
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        
-        # 2. Set a timeout (fast scan)
         s.settimeout(2)
-        
-        # 3. Attempt connection
         result = s.connect_ex((target_ip, target_port))
 
         if result == 0:
@@ -227,51 +234,17 @@ def run_port_scan():
             console.print(f"[-] Port {target_port} is [red]CLOSED/FILTERED[/red]")
 
         s.close()
-
-    # --- ERROR HANDLING ---
-    except PermissionError:
-        console.print(Panel(
-            "[bold red]ACCESS DENIED[/bold red]\n\n"
-            "This scan requires Administrator/Root privileges.\n"
-            "Please restart the tool as Admin.",
-            title="ERROR",
-            border_style="red"
-        ))
-        console.input("[dim]Press Enter to return...[/dim]")
-        
-    except OSError as e:
-        # Windows often throws Error 10013 for access denied on sockets
-        if "access is denied" in str(e).lower() or e.errno == 10013:
-            console.print(Panel(
-                "[bold red]ACCESS DENIED[/bold red]\n\n"
-                "Windows blocked this socket connection.\n"
-                "Please restart the tool as Administrator.",
-                title="ERROR",
-                border_style="red"
-            ))
-            console.input("[dim]Press Enter to return...[/dim]")
-        else:
-            console.print(f"[bold red]Unexpected Error: {e}[/bold red]")
-            time.sleep(2)
+    except Exception as e:
+        console.print(f"[bold red]Error: {e}[/bold red]")
 
 def edr_automated_scan():
-    """
-    Scans running processes one by one.
-    """
     console.print("\n[bold red]!!! WARNING !!![/bold red]")
     console.print("You are about to scan running processes against public APIs.")
     console.print("Free API keys have strict rate limits (usually 4 requests/minute).")
-    console.print("This tool will add a 15-second delay between checks to prevent bans.")
     
     confirm = console.input("Do you want to proceed? (y/n): ")
     if confirm.lower() != 'y':
         return
-
-    table = Table(title="Live EDR Scan Results", show_header=True)
-    table.add_column("PID", style="cyan")
-    table.add_column("Name", style="white")
-    table.add_column("VT Malicious", style="red")
-    table.add_column("Verdict", style="bold")
 
     with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True) as progress:
         task = progress.add_task("[green]Scanning processes...", total=None)
@@ -279,14 +252,11 @@ def edr_automated_scan():
         count = 0
         for proc in psutil.process_iter(['pid', 'name', 'exe']):
             try:
-                # OPTIONAL: Limit scan to 10 items for demo purposes
-                # if count >= 10: break 
-
                 pid = proc.info['pid']
                 name = proc.info['name']
                 exe = proc.info['exe']
                 
-                if not exe: continue # Skip system processes we can't read
+                if not exe: continue 
                 
                 progress.update(task, description=f"Hashing {name} ({pid})...")
                 file_hash = get_file_hash(exe)
@@ -299,7 +269,6 @@ def edr_automated_scan():
                     if isinstance(vt_result, dict):
                         mal_count = vt_result.get('malicious', 0)
                     
-                    # Determine Status
                     if mal_count > 0:
                         status = "[red]THREAT DETECTED[/red]"
                     else:
@@ -307,7 +276,6 @@ def edr_automated_scan():
 
                     console.print(f"PID: {pid} | {name} | Malicious: {mal_count} | {status}")
                     
-                    # RATE LIMIT SLEEP
                     time.sleep(15) 
                     count += 1
                     
@@ -321,7 +289,6 @@ def process_menu_loop():
         list_detailed_processes()
         print("\n")
         
-        # MENU UPDATED: Network Scanner moved here (Option 4)
         menu_text = (
             "[1] Investigate by PID\n"
             "[2] Investigate by Name\n"
@@ -339,10 +306,8 @@ def process_menu_loop():
             target = input("Enter PID: ")
             if target.isdigit(): investigate_target(int(target))
         elif choice == '2':
-            # Placeholder for name search logic
             pass 
         elif choice == '3':
-            # FIND PID BY PORT
             port = console.input("Enter Port: ")
             if port.isdigit():
                 found_pid = find_pid_by_port(int(port))
@@ -352,7 +317,6 @@ def process_menu_loop():
                     console.print("[bold red][-] No process found on that port.[/bold red]")
                     time.sleep(2)
         elif choice == '4':
-            # NEW: ACTIVE SCANNER MOVED HERE
             run_port_scan()
         elif choice == '5':
             edr_automated_scan()
@@ -363,11 +327,10 @@ def main_menu():
     while True:
         console.clear()
         console.print(Panel.fit(
-            "   [bold green]CYBER DEFENSE TOOLKIT v6.3[/bold green]\n   Developed by: rlgn",
+            "   [bold green]CYBER DEFENSE TOOLKIT v6.4[/bold green]\n   Developed by: rlgn",
             border_style="green"
         ))
         
-        # MAIN MENU CLEANED UP
         console.print("[bold]1.[/bold] List & Analyze Processes")
         console.print("[bold]2.[/bold] Manual Hash Check")
         console.print("[bold]q.[/bold] Quit")
@@ -378,7 +341,16 @@ def main_menu():
             process_menu_loop()
         elif choice == '2':
             h = console.input("\n[yellow]Enter SHA256: [/yellow]").strip()
-            console.print(f"VT: {check_virustotal(h)}")
+            
+            # --- UPDATED MANUAL HASH CHECK ---
+            with console.status("[bold green]Querying Threat Intelligence APIs...[/bold green]", spinner="dots"):
+                vt_res = check_virustotal(h)
+                ha_res = check_hybrid_analysis(h)
+            
+            # Show consistent results
+            display_scan_results(vt_res, ha_res)
+            # ---------------------------------
+            
             console.input("[dim]Press Enter to continue...[/dim]")
         elif choice == 'q':
             sys.exit()

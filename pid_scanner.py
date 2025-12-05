@@ -1,6 +1,6 @@
 # ==============================================================================
 #  CYBER DEFENSE TOOLKIT
-#  Version: 6.4
+#  Version: 6.5 (Detailed Metadata)
 #  Developer: rlgn00s1
 # ==============================================================================
 
@@ -25,8 +25,8 @@ console = Console()
 # CONFIGURATION
 # ==========================================
 # NOTE: Be careful sharing code with real API keys publicly.
-VT_API_KEY = 'enter your VIRUSTOTAL api key here'
-HA_API_KEY = 'enter your HYBRID ANALYSIS api key here'
+VT_API_KEY = 'ENTER YOUR VIRUSTOTAL API KEY HERE'
+HA_API_KEY = 'ENTER YOUR HYBRID ANALYSIS API KEY HERE'
 # ==========================================
 
 def get_file_hash(filepath):
@@ -39,19 +39,38 @@ def get_file_hash(filepath):
     except Exception:
         return None
 
+def format_size(size_bytes):
+    """Converts bytes to readable KB/MB string."""
+    if not size_bytes: return "Unknown"
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size_bytes < 1024.0:
+            return f"{size_bytes:.2f} {unit}"
+        size_bytes /= 1024.0
+    return f"{size_bytes:.2f} TB"
+
 def check_virustotal(file_hash):
     url = f"https://www.virustotal.com/api/v3/files/{file_hash}"
     headers = {"x-apikey": VT_API_KEY}
     try:
         response = requests.get(url, headers=headers)
         if response.status_code == 200:
-            return response.json()['data']['attributes']['last_analysis_stats']
+            data = response.json()['data']['attributes']
+            
+            # EXTRACTING DEEP METADATA
+            return {
+                'found': True,
+                'stats': data.get('last_analysis_stats', {}),
+                'names': data.get('names', []),
+                'type': data.get('type_description', 'Unknown'),
+                'size': data.get('size', 0),
+                'label': data.get('popular_threat_classification', {}).get('suggested_threat_label', None)
+            }
         elif response.status_code == 404:
-            return "Not Found"
+            return {'found': False, 'error': "File not found in VirusTotal database."}
         else:
-            return f"Error {response.status_code}"
+            return {'found': False, 'error': f"API Error {response.status_code}"}
     except Exception as e:
-        return f"Error: {e}"
+        return {'found': False, 'error': f"Connection Error: {e}"}
 
 def check_hybrid_analysis(file_hash):
     url = f"https://www.hybrid-analysis.com/api/v2/overview/{file_hash}"
@@ -68,22 +87,52 @@ def check_hybrid_analysis(file_hash):
     except Exception as e:
         return f"Error: {e}"
 
-# --- NEW SHARED GUI FUNCTION ---
-def display_scan_results(vt_result, ha_result):
+def display_scan_results(vt_data, ha_result):
     """
-    Formats and prints the threat intelligence results nicely.
-    Used by both Manual Hash Check and PID Investigation.
+    Displays Metadata + VirusTotal Stats + Hybrid Analysis Verdict
     """
-    # Format VirusTotal Text
-    vt_text = ""
-    if isinstance(vt_result, dict):
-        vt_text += f"[bold red]Malicious:  {vt_result.get('malicious', 0)}[/bold red]\n"
-        vt_text += f"[yellow]Suspicious: {vt_result.get('suspicious', 0)}[/yellow]\n"
-        vt_text += f"[green]Clean:      {vt_result.get('harmless', 0)}[/green]"
-    else:
-        vt_text = str(vt_result)
+    # --- 1. FILE INTELLIGENCE PANEL (METADATA) ---
+    meta_text = ""
+    if vt_data.get('found'):
+        # FAMILY LABEL
+        label = vt_data.get('label')
+        if label:
+            meta_text += f"[bold red]Family Label:[/bold red] {label}\n"
+        else:
+            meta_text += f"[bold]Family Label:[/bold] [dim]None/Generic[/dim]\n"
+        
+        # TYPE & SIZE
+        f_type = vt_data.get('type')
+        f_size = format_size(vt_data.get('size'))
+        meta_text += f"[bold]Type:[/bold]         {f_type}\n"
+        meta_text += f"[bold]Size:[/bold]         {f_size}\n"
 
-    # Format Hybrid Analysis Text
+        # COMMON NAMES (Take top 3 unique names)
+        names = vt_data.get('names', [])
+        if names:
+            # Clean up names list, remove duplicates, take top 3
+            short_names = list(set(names))[:3]
+            meta_text += f"[bold]Aliases:[/bold]      {', '.join(short_names)}"
+    else:
+        meta_text = "[yellow]No metadata available (File not found in VT).[/yellow]"
+
+    console.print(Panel(meta_text, title="[bold cyan]File Intelligence[/bold cyan]", border_style="cyan"))
+
+    # --- 2. VIRUSTOTAL STATS ---
+    vt_text = ""
+    if vt_data.get('found'):
+        stats = vt_data.get('stats', {})
+        malicious = stats.get('malicious', 0)
+        suspicious = stats.get('suspicious', 0)
+        clean = stats.get('harmless', 0) + stats.get('undetected', 0)
+        
+        vt_text += f"[bold red]Malicious:  {malicious}[/bold red]\n"
+        vt_text += f"[yellow]Suspicious: {suspicious}[/yellow]\n"
+        vt_text += f"[green]Clean:      {clean}[/green]"
+    else:
+        vt_text = f"[red]{vt_data.get('error')}[/red]"
+
+    # --- 3. HYBRID ANALYSIS ---
     ha_text = ""
     if isinstance(ha_result, dict):
         verdict = ha_result.get('verdict', 'unknown')
@@ -93,8 +142,8 @@ def display_scan_results(vt_result, ha_result):
     else:
         ha_text = str(ha_result)
 
-    # Print Panels
-    console.print(Panel(vt_text, title="[bold]VirusTotal[/bold]", border_style="blue"))
+    # Print VT and HA side-by-side or stacked
+    console.print(Panel(vt_text, title="[bold]VirusTotal Stats[/bold]", border_style="blue"))
     console.print(Panel(ha_text, title="[bold]Hybrid Analysis[/bold]", border_style="magenta"))
 
 def get_process_ports(proc):
@@ -109,9 +158,6 @@ def get_process_ports(proc):
     return list(set(ports))
 
 def find_pid_by_port(target_port):
-    """
-    Scans all processes to find which one is listening on the target port.
-    """
     console.print(f"\n[dim][*] Scanning for process on Port {target_port}...[/dim]")
     for proc in psutil.process_iter(['pid', 'name']):
         try:
@@ -148,7 +194,6 @@ def investigate_target(pid):
         
         console.print(f"\n[bold yellow][+] Investigating PID: {pid} ({proc.name()})[/bold yellow]")
         
-        # Hash
         file_hash = get_file_hash(exe_path)
         if not file_hash:
             console.print("[bold red][!] Could not hash file (Access Denied).[/bold red]")
@@ -156,18 +201,14 @@ def investigate_target(pid):
 
         console.print(f"[dim]SHA256: {file_hash}[/dim]")
         
-        # API Checks with Spinner
         with console.status("[bold green]Querying Threat Intelligence APIs...[/bold green]", spinner="dots"):
             vt_result = check_virustotal(file_hash)
             ha_result = check_hybrid_analysis(file_hash)
         
-        # --- USE UNIFIED DISPLAY FUNCTION ---
         display_scan_results(vt_result, ha_result)
         
-        # Show Process Tree
         console.print(Panel(display_process_tree(proc), title="Process Lineage", border_style="white"))
 
-        # Action Menu
         action = console.input("\n[bold white][[1] Kill  [2] Pause  [3] Resume  [4] Return]: [/bold white]")
         if action == '1':
             proc.terminate()
@@ -209,9 +250,6 @@ def list_detailed_processes():
     console.print(table)
 
 def run_port_scan():
-    """
-    Active Port Scanner with Admin Checks
-    """
     console.print(Panel("ACTIVE PORT SCANNER", style="bold cyan"))
     
     target_ip = console.input("[bold]Enter Target IP: [/bold]")
@@ -240,7 +278,7 @@ def run_port_scan():
 def edr_automated_scan():
     console.print("\n[bold red]!!! WARNING !!![/bold red]")
     console.print("You are about to scan running processes against public APIs.")
-    console.print("Free API keys have strict rate limits (usually 4 requests/minute).")
+    console.print("Free API keys have strict rate limits.")
     
     confirm = console.input("Do you want to proceed? (y/n): ")
     if confirm.lower() != 'y':
@@ -249,7 +287,6 @@ def edr_automated_scan():
     with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True) as progress:
         task = progress.add_task("[green]Scanning processes...", total=None)
         
-        count = 0
         for proc in psutil.process_iter(['pid', 'name', 'exe']):
             try:
                 pid = proc.info['pid']
@@ -266,8 +303,8 @@ def edr_automated_scan():
                     vt_result = check_virustotal(file_hash)
                     
                     mal_count = 0
-                    if isinstance(vt_result, dict):
-                        mal_count = vt_result.get('malicious', 0)
+                    if vt_result.get('found'):
+                         mal_count = vt_result['stats'].get('malicious', 0)
                     
                     if mal_count > 0:
                         status = "[red]THREAT DETECTED[/red]"
@@ -277,7 +314,6 @@ def edr_automated_scan():
                     console.print(f"PID: {pid} | {name} | Malicious: {mal_count} | {status}")
                     
                     time.sleep(15) 
-                    count += 1
                     
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
@@ -327,7 +363,7 @@ def main_menu():
     while True:
         console.clear()
         console.print(Panel.fit(
-            "   [bold green]CYBER DEFENSE TOOLKIT v6.4[/bold green]\n   Developed by: rlgn",
+            "   [bold green]CYBER DEFENSE TOOLKIT v6.5[/bold green]\n   Developed by: rlgn",
             border_style="green"
         ))
         
@@ -342,15 +378,11 @@ def main_menu():
         elif choice == '2':
             h = console.input("\n[yellow]Enter SHA256: [/yellow]").strip()
             
-            # --- UPDATED MANUAL HASH CHECK ---
             with console.status("[bold green]Querying Threat Intelligence APIs...[/bold green]", spinner="dots"):
                 vt_res = check_virustotal(h)
                 ha_res = check_hybrid_analysis(h)
             
-            # Show consistent results
             display_scan_results(vt_res, ha_res)
-            # ---------------------------------
-            
             console.input("[dim]Press Enter to continue...[/dim]")
         elif choice == 'q':
             sys.exit()
